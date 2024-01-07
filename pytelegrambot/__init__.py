@@ -49,10 +49,10 @@ def _telegram_req(url, params=None, data=None, files=None, post=False):
         if req.status_code != 200:
             try:
                 sdata = json.dumps(data)
-            except:
+            except BaseException:
                 sdata = '<???>'
             raise TelegramHttpError(
-                    f'Telegram request {url} failed, status {req.status_code} - {req.reason}. Message: {sdata}')
+                f'Telegram request {url} failed, status {req.status_code} - {req.reason}. Message: {sdata}')
 
         jreq = req.json()
         if not jreq['ok']:
@@ -193,15 +193,22 @@ class TelegramBot:
         """ Send a text message to chat_id, or throw """
         if len(str(text).strip()) == 0:
             raise TelegramApiError("Can't send an empty text message")
-        msg = _telegram_post(f'{self._api_base}/sendMessage',
-                             data={'chat_id': int(chat_id),
-                                   'disable_notification': disable_notifications,
-                                   'text': text})
+        msg = _telegram_post(
+            f'{self._api_base}/sendMessage',
+            data={
+                'chat_id': int(chat_id),
+                'disable_notification': disable_notifications,
+                'text': text})
         if 'message_id' not in msg:
             raise TelegramApiError(
                 f'Failed to send message to chat {chat_id}: {msg}')
 
-    def send_photo(self, chat_id, fpath, caption=None, disable_notifications=False):
+    def send_photo(
+            self,
+            chat_id,
+            fpath,
+            caption=None,
+            disable_notifications=False):
         """ Send a picture to chat_id, or throw. fpath should be a path to a local file """
         msg = _telegram_post(
             f'{self._api_base}/sendPhoto',
@@ -268,7 +275,13 @@ class TelegramLongpollBot:
     """ Creates a Telegram bot that will poll for updates. On connect failure, will
     ignore and try to create a new bot next round (to work around rate limits) """
 
-    def __init__(self, tok, poll_interval_secs, cmds=None, bot_name=None, bot_descr=None):
+    def __init__(
+            self,
+            tok,
+            poll_interval_secs,
+            cmds=None,
+            bot_name=None,
+            bot_descr=None):
         """ See TelegramBot """
         self._t = None
         self._tok = tok
@@ -291,7 +304,7 @@ class TelegramLongpollBot:
             return
 
         cnt = self._t.poll_updates()
-        #log.debug('Telegram bot %s had %s updates',
+        # log.debug('Telegram bot %s had %s updates',
         #          self._t.bot_info['first_name'], cnt)
 
     def connect(self):
@@ -328,5 +341,3 @@ class TelegramLongpollBot:
     def on_bot_connected(self, bot):
         """ Callback when bot successfully connects to Telegram """
         log.info('Connected to Telegram bot %s', bot.bot_info['first_name'])
-
-
