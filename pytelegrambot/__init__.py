@@ -5,6 +5,7 @@ import base64
 import datetime
 import json
 import logging
+import os
 import requests
 
 
@@ -36,6 +37,10 @@ class TelegramRateLimitError(RuntimeError):
 
 class TelegramHttpError(RuntimeError):
     """ Transport error """
+    pass
+
+class TelegramUnauthorizedBotAccess(RuntimeError):
+    """ Someone sent a message to this bot, and is not in the allow-list """
     pass
 
 
@@ -94,7 +99,17 @@ def _validate_telegram_cmds(cmds):
     return known_commands, str(json.dumps(fmt_cmds))
 
 
-def _telegram_sanitize_user_message(msg, known_cmds):
+def _telegram_sanitize_user_message(msg, known_cmds, accepted_chat_ids):
+    try:
+        if not msg['from']['id'] in self._accepted_chat_ids:
+            log.error('Unauthorized Telegram bot access detected %s', msg)
+            smsg = json.dumps(msg)
+            raise TelegramUnauthorizedBotAccess(smsg)
+    except KeyError:
+        log.debug('Ignoring unrecognized format message %s', msg)
+        return None
+
+
     if 'message' not in msg:
         log.debug('Ignoring non message update %s', msg)
         return None
@@ -153,7 +168,7 @@ def _telegram_sanitize_user_message(msg, known_cmds):
 class TelegramBot:
     """ Simple Telegram wrapper to send messages, receive chats, etc """
 
-    def __init__(self, tok):
+    def __init__(self, tok, accepted_chat_ids, terminate_on_unauthorized_access=False):
         """
         Create a Telegram API wrapper.
         Register a bot @ https://telegram.me/BotFather then use the received token here
@@ -161,6 +176,15 @@ class TelegramBot:
         self._api_base = f'https://api.telegram.org/bot{tok}'
         self._updates_offset = None
         self._known_commands = {}
+        self._accepted_chat_ids = accepted_chat_ids
+
+        # If an unauthorized access is detected, a file will be created - and then every time this service is instanciated,
+        # an exception will be thrown
+        self._terminate_on_unauthorized_access = terminate_on_unauthorized_access
+        self._app_tainted_marker_file = './telegram_unauthorized_access_marker'
+        if os.path.exists(self._app_tainted_marker_file):
+            log.critical("App tainted, refusing to start. Check %s", self._app_tainted_marker_file)
+            os.kill(os.getpid(), 9)
 
         self.bot_info = _telegram_get(f'{self._api_base}/getMe')
         if not self.bot_info['is_bot']:
@@ -244,7 +268,20 @@ class TelegramBot:
                     exc_info=True)
                 continue
 
-            msg = _telegram_sanitize_user_message(update, self._known_commands)
+            try:
+                msg = _telegram_sanitize_user_message(update, self._known_commands, self._accepted_chat_ids)
+            except TelegramUnauthorizedBotAccess as ex:
+                if self._terminate_on_unauthorized_access:
+                    with open(self._app_tainted_marker_file, 'x', encoding="utf-8") as fp:
+                        fp.write(f'Unauthorized access to bot {smsg}')
+                for cid in self._accepted_chat_ids:
+                    self.send_message(cid, f'Unauthorized access to bot {smsg}')
+                # Terminating here means the message will remain unprocessed forever, and the
+                # service will continue dying if restarted (as long as the message remains in the
+                # Telegram servers)
+                if self._terminate_on_unauthorized_access:
+                    psutil.Process().terminate()
+
             if msg is None:
                 continue
             elif msg['cmd'] is not None:
@@ -278,13 +315,17 @@ class TelegramLongpollBot:
     def __init__(
             self,
             tok,
+            accepted_chat_ids,
             poll_interval_secs,
             cmds=None,
             bot_name=None,
-            bot_descr=None):
+            bot_descr=None,
+            terminate_on_unauthorized_access=False):
         """ See TelegramBot """
         self._t = None
         self._tok = tok
+        self._accepted_chat_ids = accepted_chat_ids
+        self._terminate_on_unauthorized_access = terminate_on_unauthorized_access
 
         self._commands = cmds
         self._bot_name = bot_name
@@ -313,7 +354,7 @@ class TelegramLongpollBot:
             return
 
         try:
-            self._t = TelegramBot(self._tok)
+            self._t = TelegramBot(self._tok, self._accepted_chat_ids, terminate_on_unauthorized_access=self._terminate_on_unauthorized_access)
             if self._commands is not None:
                 self._t.set_commands(self._commands)
             if self._bot_name is not None:
