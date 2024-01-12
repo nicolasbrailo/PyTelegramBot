@@ -100,26 +100,21 @@ def _validate_telegram_cmds(cmds):
 
 
 def _telegram_sanitize_user_message(msg, known_cmds, accepted_chat_ids):
-    try:
-        if not msg['from']['id'] in self._accepted_chat_ids:
-            log.error('Unauthorized Telegram bot access detected %s', msg)
-            smsg = json.dumps(msg)
-            raise TelegramUnauthorizedBotAccess(smsg)
-    except KeyError:
-        log.debug('Ignoring unrecognized format message %s', msg)
-        return None
-
-
     if 'message' not in msg:
         log.debug('Ignoring non message update %s', msg)
         return None
 
     msg = msg['message']
-    if 'from' not in msg or 'chat' not in msg or 'id' not in msg['chat']:
-        log.debug(
+    if 'chat' not in msg or 'id' not in msg['chat'] or 'from' not in msg or 'id' not in msg['from']:
+        log.info(
             "Dropping dangerous looking message, can't find 'from' and 'chat' fields",
             msg)
         return None
+
+    if not msg['from']['id'] in accepted_chat_ids:
+        log.info('Unauthorized Telegram bot access detected %s', msg)
+        smsg = json.dumps(msg)
+        raise TelegramUnauthorizedBotAccess(smsg)
 
     if 'text' not in msg:
         log.debug('Ignoring message/thread metadata update %s', msg)
