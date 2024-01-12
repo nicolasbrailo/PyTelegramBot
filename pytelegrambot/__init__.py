@@ -268,14 +268,14 @@ class TelegramBot:
             except TelegramUnauthorizedBotAccess as ex:
                 if self._terminate_on_unauthorized_access:
                     with open(self._app_tainted_marker_file, 'x', encoding="utf-8") as fp:
-                        fp.write(f'Unauthorized access to bot {smsg}')
+                        fp.write(f'Unauthorized access to bot {ex}')
                 for cid in self._accepted_chat_ids:
-                    self.send_message(cid, f'Unauthorized access to bot {smsg}')
+                    self.send_message(cid, f'Unauthorized access to bot {ex}')
                 # Terminating here means the message will remain unprocessed forever, and the
                 # service will continue dying if restarted (as long as the message remains in the
                 # Telegram servers)
                 if self._terminate_on_unauthorized_access:
-                    psutil.Process().terminate()
+                    os.kill(os.getpid(), 9)
 
             if msg is None:
                 continue
