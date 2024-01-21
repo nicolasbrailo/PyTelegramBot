@@ -64,6 +64,8 @@ def _telegram_req(url, params=None, data=None, files=None, post=False):
             raise TelegramApiError(jreq['description'])
 
         return jreq['result']
+    except requests.exceptions.ConnectionError as ex:
+        raise
     except requests.exceptions.RequestException as ex:
         raise TelegramHttpError(f'Telegram request {url} failed') from ex
 
@@ -339,9 +341,12 @@ class TelegramLongpollBot:
         if self._t is None:
             return
 
-        cnt = self._t.poll_updates()
-        # log.debug('Telegram bot %s had %s updates',
-        #          self._t.bot_info['first_name'], cnt)
+        try:
+            cnt = self._t.poll_updates()
+            # log.debug('Telegram bot %s had %s updates',
+            #          self._t.bot_info['first_name'], cnt)
+        except requests.exceptions.ConnectionError as ex:
+            log.info('TelegramLongpollBot: We seem to be offline, will try to connect later...')
 
     def connect(self):
         """ Requests bot to connect, if not connected yet """
@@ -359,6 +364,8 @@ class TelegramLongpollBot:
             self.on_bot_connected(self._t)
         except TelegramRateLimitError:
             log.info('Telegram API rate limit, will try to connect later...')
+        except requests.exceptions.ConnectionError as ex:
+            log.info('TelegramLongpollBot: We seem to be offline, will try to connect later...')
 
     def send_photo(self, *a, **kw):
         self.connect()
