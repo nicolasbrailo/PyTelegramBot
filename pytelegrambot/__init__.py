@@ -279,6 +279,8 @@ class TelegramBot:
                 if self._terminate_on_unauthorized_access:
                     os.kill(os.getpid(), 9)
 
+                msg = None
+
             if msg is None:
                 continue
             elif msg['cmd'] is not None:
