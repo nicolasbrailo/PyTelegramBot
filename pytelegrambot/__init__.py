@@ -102,7 +102,7 @@ def _validate_telegram_cmds(cmds):
     return known_commands, str(json.dumps(fmt_cmds))
 
 
-def _telegram_sanitize_user_message(msg, known_cmds, accepted_chat_ids):
+def _telegram_sanitize_user_message(msg, known_cmds, accepted_chat_ids, try_parse_msg_as_cmd=False):
     if 'message' not in msg:
         log.debug('Ignoring non message update %s', msg)
         return None
@@ -129,6 +129,15 @@ def _telegram_sanitize_user_message(msg, known_cmds, accepted_chat_ids):
             msg['from']['first_name'],
             _MAX_USER_MESSAGE_LEN)
         return None
+
+    if try_parse_msg_as_cmd:
+        maybe_cmd = msg['text'].split()
+        if len(maybe_cmd) > 0:
+            maybe_cmd = maybe_cmd[0]
+        else:
+            maybe_cmd = None
+        if maybe_cmd is not None and maybe_cmd in known_cmds:
+            msg['text'] = '/' + msg['text']
 
     cmd = None
     cmd_args = None
@@ -170,7 +179,8 @@ class TelegramBot:
             self,
             tok,
             accepted_chat_ids,
-            terminate_on_unauthorized_access=False):
+            terminate_on_unauthorized_access=False,
+            try_parse_msg_as_cmd=False):
         """
         Create a Telegram API wrapper.
         Register a bot @ https://telegram.me/BotFather then use the received token here
@@ -179,6 +189,7 @@ class TelegramBot:
         self._updates_offset = None
         self._known_commands = {}
         self._accepted_chat_ids = accepted_chat_ids
+        self._try_parse_msg_as_cmd = try_parse_msg_as_cmd
 
         # If an unauthorized access is detected, a file will be created - and then every time this service is instanciated,
         # an exception will be thrown
@@ -274,7 +285,7 @@ class TelegramBot:
 
             try:
                 msg = _telegram_sanitize_user_message(
-                    update, self._known_commands, self._accepted_chat_ids)
+                    update, self._known_commands, self._accepted_chat_ids, self._try_parse_msg_as_cmd)
             except TelegramUnauthorizedBotAccess as ex:
                 if self._terminate_on_unauthorized_access:
                     with open(self._app_tainted_marker_file, 'x', encoding="utf-8") as fp:
@@ -327,12 +338,14 @@ class TelegramLongpollBot:
             cmds=None,
             bot_name=None,
             bot_descr=None,
-            terminate_on_unauthorized_access=False):
+            terminate_on_unauthorized_access=False,
+            try_parse_msg_as_cmd=False):
         """ See TelegramBot """
         self._t = None
         self._tok = tok
         self._accepted_chat_ids = accepted_chat_ids
         self._terminate_on_unauthorized_access = terminate_on_unauthorized_access
+        self._try_parse_msg_as_cmd = try_parse_msg_as_cmd
 
         self._commands = cmds
         self._bot_name = bot_name
@@ -368,19 +381,25 @@ class TelegramLongpollBot:
             self._t = TelegramBot(
                 self._tok,
                 self._accepted_chat_ids,
-                terminate_on_unauthorized_access=self._terminate_on_unauthorized_access)
+                terminate_on_unauthorized_access=self._terminate_on_unauthorized_access,
+                try_parse_msg_as_cmd=self._try_parse_msg_as_cmd)
             if self._commands is not None:
                 self._t.set_commands(self._commands)
             if self._bot_name is not None:
                 self._t.set_bot_name(self._bot_name)
             if self._bot_descr is not None:
                 self._t.set_bot_description(self._bot_descr)
+            self._t.on_bot_received_message = self.on_bot_received_message
             self.on_bot_connected(self._t)
         except TelegramRateLimitError:
             log.info('Telegram API rate limit, will try to connect later...')
         except requests.exceptions.ConnectionError as ex:
             log.info(
                 'TelegramLongpollBot: We seem to be offline, will try to connect later...')
+
+    def on_bot_received_message(self, msg):
+        """ Bot received a message. You should probably override this method. """
+        print('TelegramLongpollBot has msg, but you should override this method', msg)
 
     def send_photo(self, *a, **kw):
         self.connect()
