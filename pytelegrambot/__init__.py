@@ -39,6 +39,7 @@ class TelegramHttpError(RuntimeError):
     """ Transport error """
     pass
 
+
 class TelegramUnauthorizedBotAccess(RuntimeError):
     """ Someone sent a message to this bot, and is not in the allow-list """
     pass
@@ -165,7 +166,11 @@ def _telegram_sanitize_user_message(msg, known_cmds, accepted_chat_ids):
 class TelegramBot:
     """ Simple Telegram wrapper to send messages, receive chats, etc """
 
-    def __init__(self, tok, accepted_chat_ids, terminate_on_unauthorized_access=False):
+    def __init__(
+            self,
+            tok,
+            accepted_chat_ids,
+            terminate_on_unauthorized_access=False):
         """
         Create a Telegram API wrapper.
         Register a bot @ https://telegram.me/BotFather then use the received token here
@@ -180,7 +185,9 @@ class TelegramBot:
         self._terminate_on_unauthorized_access = terminate_on_unauthorized_access
         self._app_tainted_marker_file = './telegram_unauthorized_access_marker'
         if os.path.exists(self._app_tainted_marker_file):
-            log.critical("App tainted, refusing to start. Check %s", self._app_tainted_marker_file)
+            log.critical(
+                "App tainted, refusing to start. Check %s",
+                self._app_tainted_marker_file)
             os.kill(os.getpid(), 9)
 
         self.bot_info = _telegram_get(f'{self._api_base}/getMe')
@@ -266,7 +273,8 @@ class TelegramBot:
                 continue
 
             try:
-                msg = _telegram_sanitize_user_message(update, self._known_commands, self._accepted_chat_ids)
+                msg = _telegram_sanitize_user_message(
+                    update, self._known_commands, self._accepted_chat_ids)
             except TelegramUnauthorizedBotAccess as ex:
                 if self._terminate_on_unauthorized_access:
                     with open(self._app_tainted_marker_file, 'x', encoding="utf-8") as fp:
@@ -348,7 +356,8 @@ class TelegramLongpollBot:
             # log.debug('Telegram bot %s had %s updates',
             #          self._t.bot_info['first_name'], cnt)
         except requests.exceptions.ConnectionError as ex:
-            log.info('TelegramLongpollBot: We seem to be offline, will try to connect later...')
+            log.info(
+                'TelegramLongpollBot: We seem to be offline, will try to connect later...')
 
     def connect(self):
         """ Requests bot to connect, if not connected yet """
@@ -356,7 +365,10 @@ class TelegramLongpollBot:
             return
 
         try:
-            self._t = TelegramBot(self._tok, self._accepted_chat_ids, terminate_on_unauthorized_access=self._terminate_on_unauthorized_access)
+            self._t = TelegramBot(
+                self._tok,
+                self._accepted_chat_ids,
+                terminate_on_unauthorized_access=self._terminate_on_unauthorized_access)
             if self._commands is not None:
                 self._t.set_commands(self._commands)
             if self._bot_name is not None:
@@ -367,7 +379,8 @@ class TelegramLongpollBot:
         except TelegramRateLimitError:
             log.info('Telegram API rate limit, will try to connect later...')
         except requests.exceptions.ConnectionError as ex:
-            log.info('TelegramLongpollBot: We seem to be offline, will try to connect later...')
+            log.info(
+                'TelegramLongpollBot: We seem to be offline, will try to connect later...')
 
     def send_photo(self, *a, **kw):
         self.connect()
