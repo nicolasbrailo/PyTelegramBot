@@ -334,7 +334,8 @@ class TelegramLongpollBot:
             self,
             tok,
             accepted_chat_ids,
-            poll_interval_secs,
+            short_poll_interval_secs,
+            long_poll_interval_secs,
             cmds=None,
             bot_name=None,
             bot_descr=None,
@@ -347,6 +348,13 @@ class TelegramLongpollBot:
         self._terminate_on_unauthorized_access = terminate_on_unauthorized_access
         self._try_parse_msg_as_cmd = try_parse_msg_as_cmd
 
+        # State for poll frequency control
+        self._short_poll_period_secs = short_poll_interval_secs
+        self._long_poll_period_secs = long_poll_interval_secs
+        self._current_poll_period = self._short_poll_period_secs
+        self._polls_with_no_cmds = 0
+        self._polls_with_no_cmds_before_reducing_freq = 120 / self._short_poll_period_secs
+
         self._commands = cmds
         self._bot_name = bot_name
         self._bot_descr = bot_descr
@@ -356,7 +364,7 @@ class TelegramLongpollBot:
         self._poll_job = self._scheduler.add_job(
             func=self._poll_updates,
             trigger="interval",
-            seconds=poll_interval_secs,
+            seconds=self._current_poll_period,
             next_run_time=datetime.datetime.now())
 
     def _poll_updates(self):
@@ -365,12 +373,34 @@ class TelegramLongpollBot:
             return
 
         try:
-            cnt = self._t.poll_updates()
-            # log.debug('Telegram bot %s had %s updates',
-            #          self._t.bot_info['first_name'], cnt)
+            msg_cnt = self._t.poll_updates()
         except requests.exceptions.ConnectionError as ex:
             log.info(
                 'TelegramLongpollBot: We seem to be offline, will try to connect later...')
+
+        self._maybe_update_poll_frequency(msg_cnt)
+
+    def _maybe_update_poll_frequency(self, last_poll_msg_cnt):
+        if last_poll_msg_cnt != 0:
+            self._polls_with_no_cmds = 0
+        else:
+            self._polls_with_no_cmds += 1
+
+        needs_resched = False
+        if self._polls_with_no_cmds < self._polls_with_no_cmds_before_reducing_freq and self._current_poll_period != self._short_poll_period_secs:
+            # We received a cmd after a period of inactivity: increase poll freq
+            needs_resched = True
+            self._current_poll_period = self._short_poll_period_secs
+        elif self._polls_with_no_cmds >= self._polls_with_no_cmds_before_reducing_freq and self._current_poll_period != self._long_poll_period_secs:
+            # No commands received after inactivity period, decrease poll freq
+            needs_resched = True
+            self._current_poll_period = self._long_poll_period_secs
+            log.info("User inactive: reducing frequency of polling to %s", self._current_poll_period)
+
+        if needs_resched:
+            self._poll_job.reschedule(
+                trigger="interval",
+                seconds=self._current_poll_period)
 
     def connect(self):
         """ Requests bot to connect, if not connected yet """
