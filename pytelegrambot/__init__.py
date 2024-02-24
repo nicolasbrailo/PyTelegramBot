@@ -242,23 +242,38 @@ class TelegramBot:
             raise TelegramApiError(
                 f'Failed to send message to chat {chat_id}: {msg}')
 
-    def send_photo(
+    def send_photo(self, *a, **kw):
+        """ Send a photo to a chat """
+        self._send_file('sendPhoto', *a, **kw)
+
+    def send_video(self, *a, **kw):
+        """ Send a video to a chat """
+        self._send_file('sendVideo', *a, **kw)
+
+    def _send_file(
             self,
+            media_type,
             chat_id,
             fpath,
             caption=None,
             disable_notifications=False):
-        """ Send a picture to chat_id, or throw. fpath should be a path to a local file """
+        """ Send a photo or video to chat_id, or throw. fpath should be a path to a local file """
+        if media_type == 'sendPhoto':
+            file = {'photo': open(fpath, 'rb')}
+        elif media_type == 'sendVideo':
+            if not fpath.endswith('.mp4'):
+                raise ValueError(f'Telegram video file names must end in .mp4 ({fpath})')
+            file = {'video': open(fpath, 'rb')}
+        else:
+            raise KeyError(f'Unknown or unsupported media type {media_type} for TelegramBot bot')
+
         msg = _telegram_post(
-            f'{self._api_base}/sendPhoto',
+            f'{self._api_base}/{media_type}',
             data={
                 'chat_id': int(chat_id),
                 'disable_notification': disable_notifications,
                 'caption': str(caption) if caption is not None else ''},
-            files={
-                'photo': open(
-                    fpath,
-                    'rb')})
+            files=file)
         if 'message_id' not in msg:
             raise TelegramApiError(
                 f'Failed to send message to chat {chat_id}: {msg}')
@@ -437,6 +452,13 @@ class TelegramLongpollBot:
             log.error('Skipping request to send_photo, Telegram not connected')
             return
         self._t.send_photo(*a, **kw)
+
+    def send_video(self, *a, **kw):
+        self.connect()
+        if self._t is None:
+            log.error('Skipping request to send_video, Telegram not connected')
+            return
+        self._t.send_video(*a, **kw)
 
     def send_message(self, *a, **kw):
         self.connect()
