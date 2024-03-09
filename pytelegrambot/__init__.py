@@ -390,6 +390,7 @@ class TelegramLongpollBot:
         try:
             msg_cnt = self._t.poll_updates()
         except requests.exceptions.ConnectionError as ex:
+            msg_cnt = 0
             log.info(
                 'TelegramLongpollBot: We seem to be offline, will try to connect later...')
 
