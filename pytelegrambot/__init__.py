@@ -82,6 +82,12 @@ def _telegram_post(*a, **kw):
 def _validate_telegram_cmds(cmds):
     fmt_cmds = []
     known_commands = {}
+
+    # If cmds is a dict instead of a list, transform to a list by dropping all keys. This is done
+    # to make _validate_telegram_cmds idempotent
+    if type(cmds) == type({}):
+        cmds = [x.values() for x in cmds.values()]
+
     for cmd in cmds:
         try:
             cmd, descr, cb = cmd
@@ -96,7 +102,9 @@ def _validate_telegram_cmds(cmds):
         if not cmd.replace('_', '').isalnum():
             raise KeyError(f'TelegramBot command {cmd} is not alphanumeric')
 
-        known_commands[cmd] = cb
+        # Ensure order of known_commands is the same as the order expected when unpacking, so that it works with
+        # either tuples or dict items
+        known_commands[cmd] = {'cmd': cmd, 'descr': descr, 'cb': cb}
         fmt_cmds.append({'command': cmd, 'description': descr})
 
     return known_commands, str(json.dumps(fmt_cmds))
@@ -228,6 +236,15 @@ class TelegramBot:
             data={
                 'commands': fmt_cmds})
 
+    def add_commands(self, cmds):
+        """ Adds new to the commands available to users of this bot """
+        new_cmds, _ = _validate_telegram_cmds(cmds)
+        for cmd in new_cmds:
+            if cmd in self._known_commands:
+                log.warning("Registering command '%s' replaces old command", cmd)
+        self._known_commands.update(new_cmds)
+        return self.set_commands(self._known_commands)
+
     def send_message(self, chat_id, text, disable_notifications=False):
         """ Send a text message to chat_id, or throw """
         if len(str(text).strip()) == 0:
@@ -319,7 +336,7 @@ class TelegramBot:
                 continue
             elif msg['cmd'] is not None:
                 try:
-                    cb = self._known_commands[msg['cmd']]
+                    cb = self._known_commands[msg['cmd']]['cb']
                     cb(self, msg)
                 except BaseException:
                     # Swallow all errors: if processing fails, we should continue from the next one,
@@ -351,7 +368,7 @@ class TelegramLongpollBot:
             accepted_chat_ids,
             short_poll_interval_secs,
             long_poll_interval_secs,
-            cmds=None,
+            cmds=[],
             bot_name=None,
             bot_descr=None,
             terminate_on_unauthorized_access=False,
@@ -370,7 +387,7 @@ class TelegramLongpollBot:
         self._polls_with_no_cmds = 0
         self._polls_with_no_cmds_before_reducing_freq = 120 / self._short_poll_period_secs
 
-        self._commands = cmds
+        self._commands, _ = _validate_telegram_cmds(cmds)
         self._bot_name = bot_name
         self._bot_descr = bot_descr
 
@@ -442,6 +459,15 @@ class TelegramLongpollBot:
         except requests.exceptions.ConnectionError as ex:
             log.info(
                 'TelegramLongpollBot: We seem to be offline, will try to connect later...')
+
+    def add_commands(self, cmds):
+        new_cmds, _ = _validate_telegram_cmds(cmds)
+        self._commands.update(new_cmds)
+        self.connect()
+        if self._t is None:
+            log.warning("Can't add new commands, Telegram not connected. Will add them once connected")
+            return
+        self._t.add_commands(cmds)
 
     def on_bot_received_message(self, msg):
         """ Bot received a message. You should probably override this method. """
