@@ -261,11 +261,11 @@ class TelegramBot:
 
     def send_photo(self, *a, **kw):
         """ Send a photo to a chat """
-        self._send_file('sendPhoto', *a, **kw)
+        return self._send_file('sendPhoto', *a, **kw)
 
     def send_video(self, *a, **kw):
         """ Send a video to a chat """
-        self._send_file('sendVideo', *a, **kw)
+        return self._send_file('sendVideo', *a, **kw)
 
     def _send_file(
             self,
