@@ -1,8 +1,10 @@
 """ Trivial Telegram wrapper """
 
+from abc import ABC, abstractmethod
 from apscheduler.schedulers.background import BackgroundScheduler
+from collections import deque
+from datetime import datetime
 import base64
-import datetime
 import json
 import logging
 import os
@@ -22,6 +24,21 @@ _MAX_USER_MESSAGE_LEN = 150
 # If a user command can be split into more than N tokens, discard it for
 # security
 _MAX_USER_CMD_TOKS = 20
+
+def _stringify(*a, **kw):
+    """ Used to keep history of messages """
+    return ", ".join(
+        [*map(str, a)] +
+        [f"{k}={v}" for k, v in kw.items()]
+    )
+
+def mk_log_sent_msg(*a, **kw):
+    """ Helper to keep a log of sent messages """
+    return {
+        'timestamp': datetime.now().isoformat(),
+        'direction': 'sent',
+        'message': _stringify(*a, **kw),
+    }
 
 
 class TelegramApiError(RuntimeError):
@@ -358,7 +375,7 @@ class TelegramBot:
         print('Bot has msg ', msg)
 
 
-class TelegramLongpollBot:
+class TelegramLongpollBot(ABC):
     """ Creates a Telegram bot that will poll for updates. On connect failure, will
     ignore and try to create a new bot next round (to work around rate limits) """
 
@@ -371,6 +388,7 @@ class TelegramLongpollBot:
             cmds=[],
             bot_name=None,
             bot_descr=None,
+            message_history_len=50,
             terminate_on_unauthorized_access=False,
             try_parse_msg_as_cmd=False):
         """ See TelegramBot """
@@ -379,6 +397,9 @@ class TelegramLongpollBot:
         self._accepted_chat_ids = accepted_chat_ids
         self._terminate_on_unauthorized_access = terminate_on_unauthorized_access
         self._try_parse_msg_as_cmd = try_parse_msg_as_cmd
+
+        # Keep the history here instead of the parent object, so it persists over reconnects
+        self._message_history = deque(maxlen=message_history_len)
 
         # State for poll frequency control
         self._short_poll_period_secs = short_poll_interval_secs
@@ -397,7 +418,10 @@ class TelegramLongpollBot:
             func=self._poll_updates,
             trigger="interval",
             seconds=self._current_poll_period,
-            next_run_time=datetime.datetime.now())
+            next_run_time=datetime.now())
+
+    def get_history(self):
+        return self._message_history
 
     def _poll_updates(self):
         self.connect()
@@ -452,7 +476,7 @@ class TelegramLongpollBot:
                 self._t.set_bot_name(self._bot_name)
             if self._bot_descr is not None:
                 self._t.set_bot_description(self._bot_descr)
-            self._t.on_bot_received_message = self.on_bot_received_message
+            self._t.on_bot_received_message = self._on_bot_received_message
             self.on_bot_connected(self._t)
         except TelegramRateLimitError:
             log.info('Telegram API rate limit, will try to connect later...')
@@ -469,6 +493,15 @@ class TelegramLongpollBot:
             return
         self._t.add_commands(cmds)
 
+    def _on_bot_received_message(self, msg):
+        self._message_history.append({
+            'timestamp': datetime.now().isoformat(),
+            'direction': 'received',
+            'message': msg
+        })
+        self.on_bot_received_message(msg)
+
+    @abstractmethod
     def on_bot_received_message(self, msg):
         """ Bot received a message. You should probably override this method. """
         print('TelegramLongpollBot has msg, but you should override this method', msg)
@@ -478,6 +511,7 @@ class TelegramLongpollBot:
         if self._t is None:
             log.error('Skipping request to send_photo, Telegram not connected')
             return
+        self._message_history.append(mk_log_sent_msg(*a, **kw))
         self._t.send_photo(*a, **kw)
 
     def send_video(self, *a, **kw):
@@ -485,6 +519,7 @@ class TelegramLongpollBot:
         if self._t is None:
             log.error('Skipping request to send_video, Telegram not connected')
             return
+        self._message_history.append(mk_log_sent_msg(*a, **kw))
         self._t.send_video(*a, **kw)
 
     def send_message(self, *a, **kw):
@@ -492,6 +527,7 @@ class TelegramLongpollBot:
         if self._t is None:
             log.error('Skipping request to send message, Telegram not connected')
             return
+        self._message_history.append(mk_log_sent_msg(*a, **kw))
         self._t.send_message(*a, **kw)
 
     def on_bot_connected(self, bot):
