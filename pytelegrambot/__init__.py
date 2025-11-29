@@ -205,7 +205,9 @@ class TelegramBot:
             tok,
             accepted_chat_ids,
             terminate_on_unauthorized_access=False,
-            try_parse_msg_as_cmd=False):
+            try_parse_msg_as_cmd=False,
+            on_bot_received_non_cmd_message=None,
+            on_bot_received_command=None):
         """
         Create a Telegram API wrapper.
         Register a bot @ https://telegram.me/BotFather then use the received token here
@@ -215,6 +217,8 @@ class TelegramBot:
         self._known_commands = {}
         self._accepted_chat_ids = accepted_chat_ids
         self._try_parse_msg_as_cmd = try_parse_msg_as_cmd
+        self._on_bot_received_non_cmd_message = on_bot_received_non_cmd_message
+        self._on_bot_received_command = on_bot_received_command
 
         # If an unauthorized access is detected, a file will be created - and then every time this service is instanciated,
         # an exception will be thrown
@@ -314,8 +318,8 @@ class TelegramBot:
         return True
 
     def poll_updates(self):
-        """ Poll Telegram for events for this bot. Will call on_bot_received_message if this bot
-        has a pending message, and it will ignore all other updates. """
+        """ Poll Telegram for events for this bot. Will call the installed command callback, if possible, or
+        on_bot_received_non_cmd_message if not when a message is available/pending. Will ignore all other updates. """
         max_update_id = 0
         updates_prcd = 0
         for update in _telegram_get(
@@ -353,6 +357,8 @@ class TelegramBot:
                 continue
             elif msg['cmd'] is not None:
                 try:
+                    if self._on_bot_received_command:
+                        self._on_bot_received_command(msg)
                     cb = self._known_commands[msg['cmd']]['cb']
                     cb(self, msg)
                 except BaseException:
@@ -363,16 +369,15 @@ class TelegramBot:
                         msg['cmd'],
                         exc_info=True)
             else:
-                self.on_bot_received_message(msg)
+                if self._on_bot_received_non_cmd_message:
+                    self._on_bot_received_non_cmd_message(msg)
+                else:
+                    log.error("TelegramBot: Ignoring received non-command message: %s", msg)
 
             updates_prcd += 1
 
         self._updates_offset = {'offset': max_update_id}
         return updates_prcd
-
-    def on_bot_received_message(self, msg):
-        """ Bot received a message. You should probably override this method. """
-        print('Bot has msg ', msg)
 
 
 class TelegramLongpollBot(ABC):
@@ -393,6 +398,8 @@ class TelegramLongpollBot(ABC):
             try_parse_msg_as_cmd=False):
         """ See TelegramBot """
         self._t = None
+        self._cmds_set = False
+        self._meta_set = False
         self._tok = tok
         self._accepted_chat_ids = accepted_chat_ids
         self._terminate_on_unauthorized_access = terminate_on_unauthorized_access
@@ -460,6 +467,12 @@ class TelegramLongpollBot(ABC):
                 seconds=self._current_poll_period)
 
     def connect(self):
+        self._build_base_bot()
+        self._set_cmds()
+        # Less important, if this fails it can be retried some time later
+        self._set_meta()
+
+    def _build_base_bot(self):
         """ Requests bot to connect, if not connected yet """
         if self._t is not None:
             return
@@ -469,20 +482,38 @@ class TelegramLongpollBot(ABC):
                 self._tok,
                 self._accepted_chat_ids,
                 terminate_on_unauthorized_access=self._terminate_on_unauthorized_access,
-                try_parse_msg_as_cmd=self._try_parse_msg_as_cmd)
+                try_parse_msg_as_cmd=self._try_parse_msg_as_cmd,
+                on_bot_received_non_cmd_message=self._on_bot_received_non_cmd_message,
+                on_bot_received_command=self._on_bot_received_command)
+            log.info('Connected to Telegram bot %s', self._t.bot_info['first_name'])
+        except TelegramRateLimitError:
+            log.warning('Telegram API rate limit, will try to connect later...')
+        except requests.exceptions.ConnectionError as ex:
+            log.warning(
+                'TelegramLongpollBot: We seem to be offline, will try to connect later...')
+
+    def _set_cmds(self):
+        if self._cmds_set:
+            return
+        try:
             if self._commands is not None:
                 self._t.set_commands(self._commands)
+            self._cmds_set = True
+        except TelegramRateLimitError:
+            log.info('Telegram API rate limit, will set commands later...')
+
+    def _set_meta(self):
+        if self._meta_set:
+            return
+        # This isn't critical, so try only once
+        self._meta_set = True
+        try:
             if self._bot_name is not None:
                 self._t.set_bot_name(self._bot_name)
             if self._bot_descr is not None:
                 self._t.set_bot_description(self._bot_descr)
-            self._t.on_bot_received_message = self._on_bot_received_message
-            self.on_bot_connected(self._t)
         except TelegramRateLimitError:
-            log.info('Telegram API rate limit, will try to connect later...')
-        except requests.exceptions.ConnectionError as ex:
-            log.info(
-                'TelegramLongpollBot: We seem to be offline, will try to connect later...')
+            log.info('Telegram API rate limit, bot metadata not set...')
 
     def add_commands(self, cmds):
         new_cmds, _ = _validate_telegram_cmds(cmds)
@@ -493,16 +524,23 @@ class TelegramLongpollBot(ABC):
             return
         self._t.add_commands(cmds)
 
-    def _on_bot_received_message(self, msg):
+    def _on_bot_received_command(self, msg):
         self._message_history.append({
             'timestamp': datetime.now().isoformat(),
             'direction': 'received',
             'message': msg
         })
-        self.on_bot_received_message(msg)
+
+    def _on_bot_received_non_cmd_message(self, msg):
+        self._message_history.append({
+            'timestamp': datetime.now().isoformat(),
+            'direction': 'received',
+            'message': msg
+        })
+        self.on_bot_received_non_cmd_message(msg)
 
     @abstractmethod
-    def on_bot_received_message(self, msg):
+    def on_bot_received_non_cmd_message(self, msg):
         """ Bot received a message. You should probably override this method. """
         print('TelegramLongpollBot has msg, but you should override this method', msg)
 
@@ -530,6 +568,3 @@ class TelegramLongpollBot(ABC):
         self._message_history.append(mk_log_sent_msg(*a, **kw))
         self._t.send_message(*a, **kw)
 
-    def on_bot_connected(self, bot):
-        """ Callback when bot successfully connects to Telegram """
-        log.info('Connected to Telegram bot %s', bot.bot_info['first_name'])
