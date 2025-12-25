@@ -74,8 +74,12 @@ def _telegram_req(url, params=None, data=None, files=None, post=False):
                 sdata = json.dumps(data)
             except BaseException:
                 sdata = '<???>'
+            try:
+                response_text = req.text
+            except BaseException:
+                response_text = '<???>'
             raise TelegramHttpError(
-                f'Telegram request {url} failed, status {req.status_code} - {req.reason}. Message: {sdata}')
+                f'Telegram request {url} failed, status {req.status_code} - {req.reason}. Sent: {sdata}. Response: {response_text}')
 
         jreq = req.json()
         if not jreq['ok']:
