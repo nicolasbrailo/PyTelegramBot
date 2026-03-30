@@ -313,7 +313,7 @@ class TelegramBot:
         new_cmds, _ = _validate_telegram_cmds(cmds)
         for cmd in new_cmds:
             if cmd in self._known_commands:
-                log.warning("Registering command '%s' replaces old command", cmd)
+                log.debug("Registering command '%s' replaces old command", cmd)
         self._known_commands.update(new_cmds)
         return self.set_commands(self._known_commands)
 
