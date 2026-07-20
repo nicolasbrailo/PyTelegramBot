@@ -54,8 +54,18 @@ class TelegramRateLimitError(RuntimeError):
 
 
 class TelegramHttpError(RuntimeError):
-    """ Transport error """
-    pass
+    """ Transport error. status_code holds the HTTP status Telegram replied with, or None if
+    the request failed before we got a response """
+
+    def __init__(self, msg, status_code=None):
+        super().__init__(msg)
+        self.status_code = status_code
+
+    def is_downstream_error(self):
+        """ True if Telegram (or the network) failed, rather than us sending a bad request.
+        A 4xx means we built something invalid and should be noisy about it; a 5xx or a dead
+        connection is not an application error and there is nothing to fix on our side. """
+        return self.status_code is None or self.status_code >= 500
 
 
 class TelegramUnauthorizedBotAccess(RuntimeError):
@@ -76,7 +86,8 @@ def _telegram_req(url, params=None, data=None, files=None, post=False):
             except BaseException:
                 sdata = '<???>'
             raise TelegramHttpError(
-                f'Telegram request {url} failed, status {req.status_code} - {req.reason}. Message: {sdata}')
+                f'Telegram request {url} failed, status {req.status_code} - {req.reason}. Message: {sdata}',
+                status_code=req.status_code)
 
         jreq = req.json()
         if not jreq['ok']:
@@ -395,7 +406,8 @@ class TelegramBot:
         resp = requests.get(download_url)
         if resp.status_code != 200:
             raise TelegramHttpError(
-                f'Failed to download file {file_id}: status {resp.status_code}')
+                f'Failed to download file {file_id}: status {resp.status_code}',
+                status_code=resp.status_code)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         with open(dest_path, 'wb') as fp:
             fp.write(resp.content)
@@ -527,6 +539,15 @@ class TelegramLongpollBot(ABC):
             msg_cnt = 0
             log.info(
                 'TelegramLongpollBot: We seem to be offline, will try to connect later...')
+        except TelegramHttpError as ex:
+            if not ex.is_downstream_error():
+                raise
+            # Telegram is having a bad day. Don't let this escape to the scheduler: apscheduler
+            # logs an uncaught job exception at error level, and anything logged at error level
+            # may be relayed back to us as a message to send - which fails too, and loops.
+            msg_cnt = 0
+            log.warning(
+                'TelegramLongpollBot: Telegram is unavailable, will retry on next poll: %s', ex)
 
         self._maybe_update_poll_frequency(msg_cnt)
 
