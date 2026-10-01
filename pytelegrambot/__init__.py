@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import os
+import re
 import requests
 import time
 
@@ -73,6 +74,15 @@ class TelegramUnauthorizedBotAccess(RuntimeError):
     pass
 
 
+_BOT_TOKEN_RE = re.compile(r'/bot[^/\s]+')
+
+
+def _redact_token(s):
+    """ Telegram API URLs embed the bot token (/bot<tok>/method). Strip it from anything that may end up
+    in a log or exception message. """
+    return _BOT_TOKEN_RE.sub('/bot<redacted>', str(s))
+
+
 def _telegram_req(url, params=None, data=None, files=None, post=False):
     try:
         req_method = requests.post if post else requests.get
@@ -86,7 +96,8 @@ def _telegram_req(url, params=None, data=None, files=None, post=False):
             except BaseException:
                 sdata = '<???>'
             raise TelegramHttpError(
-                f'Telegram request {url} failed, status {req.status_code} - {req.reason}. Message: {sdata}',
+                f'Telegram request {_redact_token(url)} failed, status {req.status_code} - {req.reason}. '
+                f'Message: {sdata}',
                 status_code=req.status_code)
 
         jreq = req.json()
@@ -95,9 +106,10 @@ def _telegram_req(url, params=None, data=None, files=None, post=False):
 
         return jreq['result']
     except requests.exceptions.ConnectionError as ex:
-        raise
+        # Re-raise without chaining: the original exception's message (and traceback) holds the token
+        raise requests.exceptions.ConnectionError(_redact_token(ex)) from None
     except requests.exceptions.RequestException as ex:
-        raise TelegramHttpError(f'Telegram request {url} failed') from ex
+        raise TelegramHttpError(f'Telegram request {_redact_token(url)} failed: {_redact_token(ex)}') from None
 
 
 _telegram_get = _telegram_req
@@ -403,7 +415,12 @@ class TelegramBot:
             params={'file_id': file_id})
         file_path = result['file_path']
         download_url = f'https://api.telegram.org/file/bot{self._tok}/{file_path}'
-        resp = requests.get(download_url)
+        try:
+            resp = requests.get(download_url)
+        except requests.exceptions.ConnectionError as ex:
+            raise requests.exceptions.ConnectionError(_redact_token(ex)) from None
+        except requests.exceptions.RequestException as ex:
+            raise TelegramHttpError(f'Failed to download file {file_id}: {_redact_token(ex)}') from None
         if resp.status_code != 200:
             raise TelegramHttpError(
                 f'Failed to download file {file_id}: status {resp.status_code}',
@@ -601,7 +618,7 @@ class TelegramLongpollBot(ABC):
                 'TelegramLongpollBot: We seem to be offline, will try to connect later...')
 
     def _set_cmds(self):
-        if self._cmds_set:
+        if self._cmds_set or self._t is None:
             return
         try:
             if self._commands is not None:
@@ -611,7 +628,7 @@ class TelegramLongpollBot(ABC):
             log.info('Telegram API rate limit, will set commands later...')
 
     def _set_meta(self):
-        if self._meta_set:
+        if self._meta_set or self._t is None:
             return
         # This isn't critical, so try only once
         self._meta_set = True
