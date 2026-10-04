@@ -26,6 +26,9 @@ _MAX_USER_MESSAGE_LEN = 150
 # If a user command can be split into more than N tokens, discard it for
 # security
 _MAX_USER_CMD_TOKS = 20
+# Outgoing text messages longer than this are truncated. Telegram rejects anything over 4096 chars,
+# and long messages (eg tracebacks) are unreadable on a phone anyway
+_MAX_SENT_MESSAGE_LEN = 1024
 
 def _stringify(*a, **kw):
     """ Used to keep history of messages """
@@ -344,6 +347,9 @@ class TelegramBot:
         """ Send a text message to chat_id, or throw """
         if len(str(text).strip()) == 0:
             raise TelegramApiError("Can't send an empty text message")
+        text = str(text)
+        if len(text) > _MAX_SENT_MESSAGE_LEN:
+            text = text[:_MAX_SENT_MESSAGE_LEN - 3] + '...'
         msg = _telegram_post(
             f'{self._api_base}/sendMessage',
             data={
