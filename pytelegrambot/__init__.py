@@ -274,6 +274,8 @@ def _telegram_sanitize_voice_message(msg, accepted_chat_ids):
 class TelegramBot:
     """ Simple Telegram wrapper to send messages, receive chats, etc """
 
+    _UNAUTHORIZED_ACCESS_GRACE_SECS = 24 * 60 * 60
+
     def __init__(
             self,
             tok,
@@ -301,6 +303,10 @@ class TelegramBot:
         # an exception will be thrown
         self._terminate_on_unauthorized_access = terminate_on_unauthorized_access
         self._app_tainted_marker_file = './telegram_unauthorized_access_marker'
+        # The first unauthorized access only creates a warning file. A second one within
+        # _UNAUTHORIZED_ACCESS_GRACE_SECS of it terminates the app. Kept in a file, not in memory,
+        # so it survives reconnects and restarts.
+        self._unauthorized_access_warn_file = './telegram_unauthorized_access_warning'
         if os.path.exists(self._app_tainted_marker_file):
             log.critical(
                 "App tainted, refusing to start. Check %s",
@@ -398,16 +404,42 @@ class TelegramBot:
         return True
 
     def _handle_unauthorized_access(self, ex):
-        """ Notify accepted chats about unauthorized access and optionally terminate """
+        """ Notify accepted chats about unauthorized access. If terminate_on_unauthorized_access is set,
+        the first access only warns; a second one within the grace period terminates the app """
+        terminate = False
         if self._terminate_on_unauthorized_access:
-            with open(self._app_tainted_marker_file, 'x', encoding="utf-8") as fp:
-                fp.write(f'Unauthorized access to bot {ex}')
+            try:
+                last_warn_age = time.time() - os.path.getmtime(self._unauthorized_access_warn_file)
+            except FileNotFoundError:
+                last_warn_age = None
+            terminate = last_warn_age is not None and last_warn_age < self._UNAUTHORIZED_ACCESS_GRACE_SECS
+            if terminate:
+                with open(self._app_tainted_marker_file, 'x', encoding="utf-8") as fp:
+                    fp.write(f'Unauthorized access to bot {ex}')
+            else:
+                with open(self._unauthorized_access_warn_file, 'w', encoding="utf-8") as fp:
+                    fp.write(f'Unauthorized access to bot {ex}')
+
+        if not self._terminate_on_unauthorized_access:
+            notice = f'Unauthorized access to bot {ex}'
+        elif terminate:
+            notice = f'Unauthorized access to bot {ex}. Second one in a day, terminating service'
+        else:
+            notice = (f'Unauthorized access to bot {ex}. Ignored; another one within a day '
+                      'will terminate the service')
+        log.warning(notice)
         for cid in self._accepted_chat_ids:
-            self.send_message(cid, f'Unauthorized access to bot {ex}')
+            try:
+                self.send_message(cid, notice)
+            except BaseException:
+                # Swallow: if this throws, the offending update isn't acked, so it would be handled
+                # again next poll and count as a second access
+                log.error('Failed to notify chat %s of unauthorized access', cid, exc_info=True)
+
         # Terminating here means the message will remain unprocessed forever, and the
         # service will continue dying if restarted (as long as the message remains in the
         # Telegram servers)
-        if self._terminate_on_unauthorized_access:
+        if terminate:
             os.kill(os.getpid(), 9)
             time.sleep(2)
             log.error("Failed to kill process after unauthorized access")
@@ -452,8 +484,9 @@ class TelegramBot:
                 try:
                     voice_msg = _telegram_sanitize_voice_message(update, self._accepted_chat_ids)
                 except TelegramUnauthorizedBotAccess as ex:
-                    voice_msg = None
+                    # Skip the general parsing below, or this update would count as two accesses
                     self._handle_unauthorized_access(ex)
+                    continue
 
                 if voice_msg is not None:
                     try:
